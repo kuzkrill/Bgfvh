@@ -2,114 +2,123 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<title>Inertial Navigation Demo</title>
+<title>Inertial Navigation — IMU Integration Demo</title>
 <style>
 body{font-family:sans-serif;margin:0;padding:0;display:flex;flex-direction:column;align-items:center;gap:12px}
 #canvas{border:1px solid #ccc;background:#fafafa}
 #controls{display:flex;gap:10px}
 button{padding:10px 16px;font-size:16px;border-radius:8px;border:none;background:#4f46e5;color:#fff;cursor:pointer}
-button:disabled{opacity:0.5}
+button:disabled{opacity:.5}
 #stats{font-size:14px}
 </style>
 </head>
 <body>
-<h2>Inertial Navigation Demo</h2>
+<h2>IMU Integration Demo (без шагомера)</h2>
 <canvas id="canvas" width="300" height="300"></canvas>
 <div id="controls">
-<button id="startBtn">Start</button>
-<button id="resetBtn" disabled>Reset</button>
+ <button id="startBtn">Start</button>
+ <button id="resetBtn" disabled>Reset</button>
 </div>
 <div id="stats">Awaiting start…</div>
 <script>
-(() => {
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
-const startBtn = document.getElementById('startBtn');
-const resetBtn = document.getElementById('resetBtn');
-const stats = document.getElementById('stats');
+(()=>{
+ const canvas=document.getElementById('canvas');
+ const ctx=canvas.getContext('2d');
+ const startBtn=document.getElementById('startBtn');
+ const resetBtn=document.getElementById('resetBtn');
+ const stats=document.getElementById('stats');
 
-let pos = {x: canvas.width/2, y: canvas.height/2};
-let heading = 0;
-let steps = 0;
-const stepLen = 0.75; // meters per step (average adult)
-const scale = 10; // 1 m = 10 px for canvas drawing
-let prevMag = 0;
-const thresh = 11.5; // m/s² threshold for step detection (g≈9.81)
+ // Позиция и скорость в мировой системе (метры)
+ let pos={x:0,y:0};
+ let vel={x:0,y:0};
 
-let running = false;
-let lastStepTime = 0;
+ const scale=10; // 1 м = 10 px
+ let lastTime=null;
+ let running=false;
 
-function drawPoint() {
-    ctx.fillStyle = '#1d4ed8';
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, 2, 0, Math.PI*2);
-    ctx.fill();
-}
+ function drawPoint(){
+  const cx=canvas.width/2+pos.x*scale;
+  const cy=canvas.height/2-pos.y*scale;
+  ctx.fillStyle='#1d4ed8';
+  ctx.beginPath();
+  ctx.arc(cx,cy,2,0,Math.PI*2);
+  ctx.fill();
+ }
+ function updateStats(){
+  stats.textContent=`X: ${pos.x.toFixed(2)} м  Y: ${pos.y.toFixed(2)} м  |  Vx: ${vel.x.toFixed(2)}  Vy: ${vel.y.toFixed(2)}`;
+ }
+ function reset(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.strokeStyle='#d1d5db';
+  ctx.strokeRect(0,0,canvas.width,canvas.height);
+  pos={x:0,y:0};
+  vel={x:0,y:0};
+  lastTime=null;
+  drawPoint();
+  updateStats();
+ }
+ // Простая фильтрация и ограничитель скорости, чтобы дрейф не уходил в бесконечность
+ const MAX_SPEED=3; // м/с
+ const ALPHA=0.01;  // эксп. спада для быстрого торможения (damping)
 
-function updateStats() {
-    stats.textContent = `Шаги: ${steps} | Heading: ${heading.toFixed(0)}° | X: ${((pos.x-canvas.width/2)/scale).toFixed(2)} м Y: ${((canvas.height/2-pos.y)/scale).toFixed(2)} м`;
-}
+ function onMotion(e){
+  if(!running) return;
+  const t=e.timeStamp; // ms
+  if(lastTime===null){ lastTime=t; return; }
+  const dt=(t-lastTime)/1000; // s
+  lastTime=t;
 
-function onMotion(e) {
-    if(!running) return;
-    const ax = e.accelerationIncludingGravity.x;
-    const ay = e.accelerationIncludingGravity.y;
-    const az = e.accelerationIncludingGravity.z;
-    const mag = Math.sqrt(ax*ax + ay*ay + az*az);
-    const now = Date.now();
-    // Simple peak detection for step
-    if(mag > thresh && prevMag <= thresh && (now - lastStepTime) > 250) {
-        lastStepTime = now;
-        steps++;
-        pos.x += stepLen * Math.sin(heading*Math.PI/180) * scale;
-        pos.y -= stepLen * Math.cos(heading*Math.PI/180) * scale;
-        drawPoint();
-        updateStats();
-    }
-    prevMag = mag;
-}
+  let ax=e.acceleration?.x;
+  let ay=e.acceleration?.y;
+  if(ax===null||ay===null||ax===undefined){
+    // На некоторых девайсах поле acceleration бывает null, fallback to accelerationIncludingGravity и предположим, что телефон лежит плоско
+    ax=e.accelerationIncludingGravity.x;
+    ay=e.accelerationIncludingGravity.y;
+  }
+  // Переводим в мировую систему: предполагаем, что экран направлен вверх, поэтому X_dev≈Y_world, Y_dev≈-X_world
+  // (для более точного решения нужно использовать quaternion из deviceorientation)
+  const axWorld= ay;       // правый = +Y_dev
+  const ayWorld= -ax;      // вперёд = -X_dev
 
-function onOrient(e) {
-    // alpha: 0-360 deg clockwise from north
-    heading = e.alpha || heading;
-}
+  // Убираем мелкий шум
+  const THR=0.1; // м/с²
+  const axFilt=Math.abs(axWorld)>THR?axWorld:0;
+  const ayFilt=Math.abs(ayWorld)>THR?ayWorld:0;
 
-function reset() {
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.strokeStyle = '#d1d5db';
-    ctx.strokeRect(0,0,canvas.width,canvas.height);
-    pos = {x: canvas.width/2, y: canvas.height/2};
-    steps = 0;
-    heading = 0;
-    drawPoint();
-    updateStats();
-}
+  // Интегрируем
+  vel.x+=axFilt*dt;
+  vel.y+=ayFilt*dt;
+  // сглаживаем скорость
+  vel.x*=1-ALPHA;
+  vel.y*=1-ALPHA;
+  // ограничиваем
+  vel.x=Math.max(Math.min(vel.x,MAX_SPEED),-MAX_SPEED);
+  vel.y=Math.max(Math.min(vel.y,MAX_SPEED),-MAX_SPEED);
 
-async function start() {
-    if (typeof DeviceMotionEvent.requestPermission === 'function') {
-        try {
-            const perm = await DeviceMotionEvent.requestPermission();
-            if(perm !== 'granted') { alert('Motion permission denied'); return; }
-            await DeviceOrientationEvent.requestPermission();
-        } catch(err) {
-            alert('Permission request failed: '+err);
-            return;
-        }
-    }
-    reset();
-    window.addEventListener('devicemotion', onMotion);
-    window.addEventListener('deviceorientation', onOrient);
-    running = true;
-    startBtn.disabled = true;
-    resetBtn.disabled = false;
-}
+  pos.x+=vel.x*dt;
+  pos.y+=vel.y*dt;
 
-startBtn.addEventListener('click', start);
-resetBtn.addEventListener('click', () => { reset(); });
-
-reset(); // initial draw
+  drawPoint();
+  updateStats();
+ }
+ async function start(){
+  if(typeof DeviceMotionEvent.requestPermission==='function'){
+    try{
+      const perm=await DeviceMotionEvent.requestPermission();
+      if(perm!=='granted'){alert('Motion permission denied');return;}
+    }catch(err){alert(err);return;}
+  }
+  reset();
+  window.addEventListener('devicemotion',onMotion);
+  running=true;
+  startBtn.disabled=true;
+  resetBtn.disabled=false;
+ }
+ startBtn.addEventListener('click',start);
+ resetBtn.addEventListener('click',reset);
+ reset();
 })();
 </script>
-<p style="max-width:320px;font-size:12px;color:#666">⚠️ Это демонстрационный пример. Ошибка положения быстро растёт из-за дрейфа MEMS‑датчиков. Используйте результаты только в учебных целях.</p>
+<p style="max-width:320px;font-size:12px;color:#666">⚠️ Пример использует прямое двойное интегрирование ускорений. Ошибка растёт <span style="white-space:nowrap">≈ O(t²)</span>, так что траектория будет быстро плавать. Для реальных задач нужна калибровка IMU и фильтр (Kalman / complementary) + коррекция по внешним маякам.</p>
 </body>
 </html>
